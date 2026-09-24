@@ -6,7 +6,7 @@
 
 **Architecture:** One Express 5 app split into feature modules (`auth`, `gateway`, `users`, `notes`), each with its own model class, repository, service, controller and router. Only the repositories talk to MongoDB. The gateway middleware checks the JWT, **removes any client-supplied identity headers**, and sets `x-user-id` and `x-username`. The notes controller reads identity only from those headers, so it doesn't know JWTs exist, and the gateway could later move to a separate API gateway process without changing the notes code.
 
-**Tech Stack:** Node.js ≥ 22 (ESM; needed for `node --test` glob patterns), Express 5.2, MongoDB Node driver 7.x (native driver with hand-written model classes, not Mongoose), bcryptjs 3, jsonwebtoken 9, Node's built-in test runner (`node:test`), supertest, mongodb-memory-server. Docker Compose runs MongoDB for local development.
+**Tech Stack:** Node.js ≥ 22 (ESM; needed for `node --test` glob patterns), Express 5.2, MongoDB Node driver 7.x (native driver with hand-written model classes, not Mongoose), bcryptjs 3, jsonwebtoken 9, Node's built-in test runner (`node:test`), supertest, mongodb-memory-server, swagger-jsdoc 6 + swagger-ui-express 5 (OpenAPI docs generated from JSDoc `@openapi` comments). Docker Compose runs MongoDB for local development.
 
 **Spec:** [docs/PROMPTS.md, Step 1](../../PROMPTS.md). The user's requirements are recorded there verbatim. The design decisions below fill the gaps in the spec, and every task follows them.
 
@@ -39,6 +39,17 @@
 - The identity header names `x-user-id` and `x-username` are defined once, in `src/gateway/userHeaders.js`.
 - Secrets come from the environment (`JWT_SECRET` is required, and the server refuses to start without it). `.env` is git-ignored.
 - Tests: `npm test` runs `node --test` against an in-memory MongoDB. No test may need a real MongoDB or network access beyond the one-time mongodb-memory-server binary download.
+- The API is documented as OpenAPI 3, generated from JSDoc `@openapi` comments by `swagger-jsdoc`, and served at `GET /api-docs` by `swagger-ui-express`. Every request/response body used by a controller has a named schema, and every model (`User`, `Note`) has a schema that matches its `toJSON()` output field-for-field.
+
+## Coding Standards
+
+These apply to every file under `src/` and `test/` written from Task 1 onward (added when the user reviewed the plan and asked for TDD, JSDoc, and stricter style; see [docs/PROMPTS.md, Step 2](../../PROMPTS.md)).
+
+- **JSDoc on every exported class and function.** Each class gets a `/** */` block describing its responsibility; each exported function/method gets one describing what it does, `@param`s, and `@returns` (or `@throws` for error paths worth calling out). Model classes additionally document each constructor field. Keep it to 1-3 lines of prose plus the tags — this is a quick reference, not an essay.
+- **Comments explain *why*, not *what*.** A short line above a non-obvious branch (e.g. "the creator can always see their own note, even if absent from sharedWith") is welcome; a comment restating the line below it is not.
+- **No expression-bodied ("implicit return") functions for named logic.** Every function declaration, class method, and named route-handler arrow function uses a block body (`{ ... }`) with the `return` (if any) as its own statement — never `const f = (x) => x + 1;` or `router.get('/x', (req, res) => res.json(y));`. This makes each step independently breakpoint-able and keeps diffs to individual statements. It does **not** apply to trivial one-expression callbacks passed inline to array methods (`.map(u => u.id)`, `.filter(Boolean)`, `.every(isObjectIdString)`) — those are still fine, since they're single expressions consumed immediately, not named service logic. Guard-clause early returns (`if (!user) { throw new NotFoundError(...); }`) are also fine and encouraged; the rule targets collapsing an entire function onto one line, not the presence of `return`/`throw` inside a block.
+- **Testable units.** Business rules live in service methods that take plain data in and return plain data out (no `req`/`res`), so they're testable without HTTP or Express in the loop; the note visibility and `sharedWith`-ownership rules are unit-tested on `Note` directly (Task 5) in addition to being exercised over HTTP (Tasks 6-7).
+- Earlier tasks in this plan (written before this section existed) may show terser inline snippets for brevity; the code actually written during execution always follows the standards above, even where it expands a snippet below into a multi-line block or adds a doc comment not shown in the plan text.
 
 ## Review Focus
 
@@ -86,10 +97,14 @@ src/
     note.service.js          class NoteService (create, listVisible, update + access rules)
     note.controller.js       class NotesController (HTTP ↔ NoteService)
     note.routes.js           createNotesRouter(controller)
+  docs/
+    schemas.js                OpenAPI component schemas (User, Note, requests, ErrorResponse)
+    swagger.js                buildOpenApiSpec(): swagger-jsdoc config, scans *.routes.js + schemas.js
 test/
   helpers/testApp.js         startTestApp(), registerAndLogin()
   app.test.js
   config.test.js
+  docs/swagger.test.js
   users/user.repository.test.js
   auth/token.service.test.js
   auth/auth.test.js
@@ -140,7 +155,7 @@ How a request flows through the layers: **router → controller** (HTTP only: re
 
 Run:
 ```bash
-npm install express@^5 mongodb@^7 bcryptjs@^3 jsonwebtoken@^9
+npm install express@^5 mongodb@^7 bcryptjs@^3 jsonwebtoken@^9 swagger-jsdoc@^6 swagger-ui-express@^5
 npm install --save-dev supertest@^7 mongodb-memory-server@^11
 ```
 Expected: `package.json` gains `dependencies`/`devDependencies`, and `package-lock.json` is created.
@@ -2099,6 +2114,540 @@ Expected: PASS (all tests)
 ```bash
 git add src/server.js docker-compose.yml .env.example README.md package.json
 git commit -m "feat: add server entry point, local MongoDB compose file and README"
+```
+
+---
+
+### Task 9: OpenAPI / Swagger documentation
+
+**Files:**
+- Create: `src/docs/schemas.js`, `src/docs/swagger.js`
+- Modify: `src/auth/auth.routes.js`, `src/notes/note.routes.js` (add `@openapi` JSDoc blocks above each route registration), `src/app.js` (mount `/api-docs` and `/api-docs.json`), `README.md` (link to the docs page)
+- Test: `test/docs/swagger.test.js`
+
+**Interfaces:**
+- Consumes: `User#toJSON()` (Task 2), `Note#toJSON()` (Task 5), the route files from Tasks 3 and 6-7
+- Produces: `buildOpenApiSpec() → object` (an OpenAPI 3 document), mounted routes `GET /api-docs` (Swagger UI) and `GET /api-docs.json` (raw spec), both public (no token required, same tier as `/health`)
+
+Documentation design: component schemas live in one place (`src/docs/schemas.js`) as `@openapi` JSDoc comments that `swagger-jsdoc` parses into `components.schemas`; every request/response schema used by a route `$ref`s one of those, so there is exactly one definition of each shape. Route files document their own endpoints next to the `router.<verb>(...)` call they describe, so the docs can't drift out of sync with which handler is actually mounted.
+
+- [ ] **Step 1: Write the failing tests**
+
+`test/docs/swagger.test.js`:
+```js
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import request from 'supertest';
+import { buildOpenApiSpec } from '../../src/docs/swagger.js';
+import { User } from '../../src/users/user.model.js';
+import { Note } from '../../src/notes/note.model.js';
+import { startTestApp } from '../helpers/testApp.js';
+
+test('buildOpenApiSpec documents every endpoint', () => {
+  const spec = buildOpenApiSpec();
+
+  assert.equal(spec.openapi, '3.0.3');
+  const paths = Object.keys(spec.paths).sort();
+  assert.deepEqual(paths, ['/login', '/note', '/notes', '/register']);
+  assert.ok(spec.paths['/note'].post, 'POST /note is documented');
+  assert.ok(spec.paths['/note'].put, 'PUT /note is documented');
+  assert.ok(spec.paths['/notes'].get, 'GET /notes is documented');
+  assert.ok(spec.paths['/register'].post, 'POST /register is documented');
+  assert.ok(spec.paths['/login'].post, 'POST /login is documented');
+});
+
+test('every model has a schema whose properties match its toJSON() keys exactly', () => {
+  const spec = buildOpenApiSpec();
+
+  const user = new User({ id: 'a'.repeat(24), username: 'alice', createdAt: new Date() });
+  const note = Note.create({ note: 'x', username: 'alice' });
+  note.id = 'b'.repeat(24);
+
+  const userSchemaKeys = Object.keys(spec.components.schemas.User.properties).sort();
+  const noteSchemaKeys = Object.keys(spec.components.schemas.Note.properties).sort();
+
+  assert.deepEqual(userSchemaKeys, Object.keys(user.toJSON()).sort());
+  assert.deepEqual(noteSchemaKeys, Object.keys(note.toJSON()).sort());
+});
+
+test('note endpoints require bearer auth in the spec; auth endpoints do not', () => {
+  const spec = buildOpenApiSpec();
+
+  assert.deepEqual(spec.paths['/note'].post.security, [{ bearerAuth: [] }]);
+  assert.deepEqual(spec.paths['/note'].put.security, [{ bearerAuth: [] }]);
+  assert.deepEqual(spec.paths['/notes'].get.security, [{ bearerAuth: [] }]);
+  assert.equal(spec.paths['/register'].post.security, undefined);
+});
+
+let ctx;
+before(async () => {
+  ctx = await startTestApp();
+});
+after(async () => {
+  await ctx.stop();
+});
+
+test('GET /api-docs.json serves the spec without a token', async () => {
+  const res = await request(ctx.app).get('/api-docs.json');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.info.title, 'Notes Service API');
+});
+
+test('GET /api-docs serves the Swagger UI page without a token', async () => {
+  const res = await request(ctx.app).get('/api-docs/');
+  assert.equal(res.status, 200);
+  assert.match(res.headers['content-type'], /html/);
+});
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `node --test test/docs/swagger.test.js`
+Expected: FAIL with `ERR_MODULE_NOT_FOUND` for `src/docs/swagger.js`.
+
+- [ ] **Step 3: Write the component schemas**
+
+`src/docs/schemas.js`:
+```js
+/**
+ * OpenAPI component schemas for every model and request/response body the
+ * API uses. This file has no executable code: swagger-jsdoc scans it for
+ * `@openapi` comment blocks and merges them into `components.schemas`, so
+ * route files can `$ref` a schema by name instead of repeating its shape.
+ * Keeping every schema in one file means there is exactly one definition
+ * per shape, and the swagger tests below catch drift from the real models.
+ */
+
+/**
+ * @openapi
+ * components:
+ *   schemas:
+ *     User:
+ *       type: object
+ *       description: A registered user, as returned by /register and inside the /login response. Never includes the password hash.
+ *       properties:
+ *         id:
+ *           type: string
+ *           pattern: '^[0-9a-f]{24}$'
+ *           example: 507f1f77bcf86cd799439011
+ *         username:
+ *           type: string
+ *           example: alice
+ *         createdAt:
+ *           type: string
+ *           format: date-time
+ *       required: [id, username, createdAt]
+ *
+ *     Credentials:
+ *       type: object
+ *       description: Request body shared by /register and /login.
+ *       properties:
+ *         username:
+ *           type: string
+ *           minLength: 3
+ *           maxLength: 32
+ *           example: alice
+ *         password:
+ *           type: string
+ *           minLength: 8
+ *           example: password123
+ *       required: [username, password]
+ *
+ *     LoginResponse:
+ *       type: object
+ *       properties:
+ *         token:
+ *           type: string
+ *           description: JWT bearer token. Send it back as `Authorization: Bearer <token>`.
+ *         user:
+ *           $ref: '#/components/schemas/User'
+ *       required: [token, user]
+ *
+ *     Note:
+ *       type: object
+ *       description: A shared or private note. Matches the note document shape from the spec.
+ *       properties:
+ *         id:
+ *           type: string
+ *           pattern: '^[0-9a-f]{24}$'
+ *         note:
+ *           type: string
+ *           minLength: 1
+ *           maxLength: 10000
+ *         createdAt:
+ *           type: string
+ *           format: date-time
+ *         updatedAt:
+ *           type: string
+ *           format: date-time
+ *         createdBy:
+ *           type: string
+ *           description: Username of the creator. Immutable after creation.
+ *         updatedBy:
+ *           type: string
+ *           description: Username of the last editor. Always set by the server.
+ *         sharedWith:
+ *           type: array
+ *           description: User ids allowed to see the note. Empty means everyone can see it.
+ *           items:
+ *             type: string
+ *             pattern: '^[0-9a-f]{24}$'
+ *       required: [id, note, createdAt, updatedAt, createdBy, updatedBy, sharedWith]
+ *
+ *     CreateNoteRequest:
+ *       type: object
+ *       properties:
+ *         note:
+ *           type: string
+ *           minLength: 1
+ *           maxLength: 10000
+ *         sharedWith:
+ *           type: array
+ *           items:
+ *             type: string
+ *             pattern: '^[0-9a-f]{24}$'
+ *       required: [note]
+ *
+ *     UpdateNoteRequest:
+ *       type: object
+ *       description: At least one of note/sharedWith is required. No other field is allowed; createdBy, createdAt, updatedAt and updatedBy are backend-owned.
+ *       properties:
+ *         id:
+ *           type: string
+ *           pattern: '^[0-9a-f]{24}$'
+ *         note:
+ *           type: string
+ *           minLength: 1
+ *           maxLength: 10000
+ *         sharedWith:
+ *           type: array
+ *           items:
+ *             type: string
+ *             pattern: '^[0-9a-f]{24}$'
+ *       required: [id]
+ *
+ *     NotesListResponse:
+ *       type: object
+ *       properties:
+ *         notes:
+ *           type: array
+ *           items:
+ *             $ref: '#/components/schemas/Note'
+ *       required: [notes]
+ *
+ *     ErrorResponse:
+ *       type: object
+ *       properties:
+ *         error:
+ *           type: string
+ *           example: Note not found
+ *       required: [error]
+ */
+```
+
+- [ ] **Step 4: Write the spec builder**
+
+`src/docs/swagger.js`:
+```js
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import swaggerJSDoc from 'swagger-jsdoc';
+
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
+const srcRoot = path.join(currentDir, '..');
+
+/**
+ * Everything in the OpenAPI document that isn't scanned from JSDoc
+ * comments: title, version, and the bearer-token security scheme that
+ * route docs reference by name.
+ */
+const swaggerDefinition = {
+  openapi: '3.0.3',
+  info: {
+    title: 'Notes Service API',
+    version: '1.0.0',
+    description: 'Shared note-taking microservice: registration, login, and gateway-protected notes.',
+  },
+  components: {
+    securitySchemes: {
+      bearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+      },
+    },
+  },
+};
+
+/**
+ * Builds the full OpenAPI 3 document by combining `swaggerDefinition` with
+ * every `@openapi` JSDoc comment found in the route and schema files.
+ * @returns {object} an OpenAPI 3 document, servable as JSON or through swagger-ui-express
+ */
+export function buildOpenApiSpec() {
+  const options = {
+    definition: swaggerDefinition,
+    apis: [
+      path.join(srcRoot, 'auth', 'auth.routes.js'),
+      path.join(srcRoot, 'notes', 'note.routes.js'),
+      path.join(srcRoot, 'docs', 'schemas.js'),
+    ],
+  };
+  return swaggerJSDoc(options);
+}
+```
+
+- [ ] **Step 5: Document the auth routes**
+
+Modify `src/auth/auth.routes.js` to add a JSDoc block above each route:
+```js
+import { Router } from 'express';
+
+/**
+ * Builds the router for the public authentication endpoints.
+ * @param {import('./auth.controller.js').AuthController} controller - handles the HTTP layer for auth
+ * @returns {import('express').Router} router with POST /register and POST /login
+ */
+export function createAuthRouter(controller) {
+  const router = Router();
+
+  /**
+   * @openapi
+   * /register:
+   *   post:
+   *     summary: Register a new user
+   *     tags: [Auth]
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             $ref: '#/components/schemas/Credentials'
+   *     responses:
+   *       201:
+   *         description: User created
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/User'
+   *       400:
+   *         description: Invalid username or password
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       409:
+   *         description: Username already exists
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.post('/register', controller.register);
+
+  /**
+   * @openapi
+   * /login:
+   *   post:
+   *     summary: Log in and receive a JWT
+   *     tags: [Auth]
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             $ref: '#/components/schemas/Credentials'
+   *     responses:
+   *       200:
+   *         description: Login succeeded
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/LoginResponse'
+   *       400:
+   *         description: Missing username or password
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       401:
+   *         description: Invalid username or password
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.post('/login', controller.login);
+
+  return router;
+}
+```
+
+- [ ] **Step 6: Document the notes routes**
+
+Modify `src/notes/note.routes.js`:
+```js
+import { Router } from 'express';
+
+/**
+ * Builds the router for the authenticated note endpoints. Every route here
+ * runs after the gateway, so `req` always carries the caller's identity
+ * headers by the time a controller method sees it.
+ * @param {import('./note.controller.js').NotesController} controller - handles the HTTP layer for notes
+ * @returns {import('express').Router} router with POST/GET/PUT for notes
+ */
+export function createNotesRouter(controller) {
+  const router = Router();
+
+  /**
+   * @openapi
+   * /note:
+   *   post:
+   *     summary: Create a note
+   *     tags: [Notes]
+   *     security: [{ bearerAuth: [] }]
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             $ref: '#/components/schemas/CreateNoteRequest'
+   *     responses:
+   *       201:
+   *         description: Note created
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Note'
+   *       400:
+   *         description: Invalid note text or sharedWith
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       401:
+   *         description: Missing or invalid token
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.post('/note', controller.create);
+
+  /**
+   * @openapi
+   * /notes:
+   *   get:
+   *     summary: List every note visible to the caller
+   *     tags: [Notes]
+   *     security: [{ bearerAuth: [] }]
+   *     responses:
+   *       200:
+   *         description: Public notes, notes shared with the caller, and the caller's own notes, newest first
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/NotesListResponse'
+   *       401:
+   *         description: Missing or invalid token
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.get('/notes', controller.list);
+
+  /**
+   * @openapi
+   * /note:
+   *   put:
+   *     summary: Update a note's text or sharing list
+   *     tags: [Notes]
+   *     security: [{ bearerAuth: [] }]
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             $ref: '#/components/schemas/UpdateNoteRequest'
+   *     responses:
+   *       200:
+   *         description: Note updated
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Note'
+   *       400:
+   *         description: Invalid id, payload, or an attempt to set a backend-owned field
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       401:
+   *         description: Missing or invalid token
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       403:
+   *         description: Attempted to change sharedWith on a note the caller didn't create
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       404:
+   *         description: Note not found, or not visible to the caller
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.put('/note', controller.update);
+
+  return router;
+}
+```
+
+- [ ] **Step 7: Mount the docs routes**
+
+Modify `src/app.js`. Add the imports:
+```js
+import swaggerUi from 'swagger-ui-express';
+import { buildOpenApiSpec } from './docs/swagger.js';
+```
+Mount alongside the other public routes, before the gateway:
+```js
+  // Public routes
+  app.get('/health', (req, res) => {
+    res.json({ status: 'ok' });
+  });
+  app.use(createAuthRouter(new AuthController(authService)));
+
+  const openApiSpec = buildOpenApiSpec();
+  app.get('/api-docs.json', (req, res) => {
+    res.json(openApiSpec);
+  });
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
+```
+(This also converts the Task 1 one-liner `/health` handler to the block-body form required by the Coding Standards section.)
+
+- [ ] **Step 8: Run all tests**
+
+Run: `npm test`
+Expected: PASS (all tests)
+
+- [ ] **Step 9: Link the docs from the README**
+
+Add a line under the "Run locally" section of `README.md`:
+```markdown
+Once running, browse the interactive API docs at http://localhost:3000/api-docs (raw spec at `/api-docs.json`).
+```
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add src/docs src/auth/auth.routes.js src/notes/note.routes.js src/app.js test/docs README.md
+git commit -m "docs: add OpenAPI/Swagger documentation for every endpoint and model"
 ```
 
 ---
