@@ -1,5 +1,5 @@
 import { getRequestUser } from '../gateway/userHeaders.js';
-import { validateCreateNote } from './note.validation.js';
+import { validateCreateNote, validateUpdateNote } from './note.validation.js';
 
 /**
  * HTTP layer for notes: reads the request, calls validation and
@@ -24,5 +24,12 @@ export class NotesController {
   list = async (req, res) => {
     const notes = await this.#notes.listVisible(getRequestUser(req));
     res.json({ notes });
+  };
+
+  /** PUT /note — updates a note's text and/or sharing list. */
+  update = async (req, res) => {
+    const { id, changes } = validateUpdateNote(req.body);
+    const note = await this.#notes.update(id, changes, getRequestUser(req));
+    res.json(note);
   };
 }

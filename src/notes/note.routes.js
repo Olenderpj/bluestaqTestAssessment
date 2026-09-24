@@ -12,6 +12,7 @@ export function createNotesRouter(controller) {
 
   router.post('/note', controller.create);
   router.get('/notes', controller.list);
+  router.put('/note', controller.update);
 
   return router;
 }
