@@ -6,6 +6,10 @@ import { AuthService } from './auth/auth.service.js';
 import { AuthController } from './auth/auth.controller.js';
 import { createAuthRouter } from './auth/auth.routes.js';
 import { createGateway } from './gateway/gateway.js';
+import { NoteRepository } from './notes/note.repository.js';
+import { NoteService } from './notes/note.service.js';
+import { NotesController } from './notes/note.controller.js';
+import { createNotesRouter } from './notes/note.routes.js';
 
 /**
  * Composition root: builds a fully wired Express app from a database
@@ -17,10 +21,12 @@ import { createGateway } from './gateway/gateway.js';
  */
 export async function createApp({ db, config }) {
   const userRepository = new UserRepository(db);
-  await userRepository.ensureIndexes();
+  const noteRepository = new NoteRepository(db);
+  await Promise.all([userRepository.ensureIndexes(), noteRepository.ensureIndexes()]);
 
   const tokenService = new TokenService({ secret: config.jwtSecret, expiresIn: config.jwtExpiresIn });
   const authService = new AuthService({ userRepository, tokenService, bcryptRounds: config.bcryptRounds });
+  const noteService = new NoteService({ noteRepository });
 
   const app = express();
   app.disable('x-powered-by');
@@ -36,7 +42,9 @@ export async function createApp({ db, config }) {
   // Everything below requires an authenticated user; the gateway sets x-user-id / x-username.
   app.use(createGateway(tokenService));
 
-  // Module wiring (notes, docs) is added here by later tasks.
+  app.use(createNotesRouter(new NotesController(noteService)));
+
+  // Module wiring (docs) is added here by later tasks.
 
   app.use(notFoundHandler);
   app.use(errorHandler);
