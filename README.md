@@ -11,6 +11,8 @@ docker compose up -d mongo
 npm run start:env
 ```
 
+Once running, browse the interactive API docs at http://localhost:3000/api-docs (raw spec at `/api-docs.json`).
+
 ## Test
 
 ```bash

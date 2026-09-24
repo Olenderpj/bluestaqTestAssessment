@@ -1,4 +1,5 @@
 import express from 'express';
+import swaggerUi from 'swagger-ui-express';
 import { errorHandler, notFoundHandler } from './common/errorHandler.js';
 import { UserRepository } from './users/user.repository.js';
 import { TokenService } from './auth/token.service.js';
@@ -10,6 +11,7 @@ import { NoteRepository } from './notes/note.repository.js';
 import { NoteService } from './notes/note.service.js';
 import { NotesController } from './notes/note.controller.js';
 import { createNotesRouter } from './notes/note.routes.js';
+import { buildOpenApiSpec } from './docs/swagger.js';
 
 /**
  * Composition root: builds a fully wired Express app from a database
@@ -39,12 +41,16 @@ export async function createApp({ db, config }) {
   // Public routes: no token required.
   app.use(createAuthRouter(new AuthController(authService)));
 
+  const openApiSpec = buildOpenApiSpec();
+  app.get('/api-docs.json', (req, res) => {
+    res.json(openApiSpec);
+  });
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
+
   // Everything below requires an authenticated user; the gateway sets x-user-id / x-username.
   app.use(createGateway(tokenService));
 
   app.use(createNotesRouter(new NotesController(noteService)));
-
-  // Module wiring (docs) is added here by later tasks.
 
   app.use(notFoundHandler);
   app.use(errorHandler);
