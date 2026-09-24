@@ -1,5 +1,6 @@
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { MongoClient } from 'mongodb';
+import request from 'supertest';
 import { createApp } from '../../src/app.js';
 
 /**
@@ -38,5 +39,25 @@ export async function startTestApp() {
       await client.close();
       await mongod.stop();
     },
+  };
+}
+
+/**
+ * Registers and logs in a fresh user against a running test app, and
+ * returns everything a test needs to act as that user.
+ * @param {import('express').Application} app - the app under test
+ * @param {string} username - username to register
+ * @param {string} [password] - password to register and log in with
+ * @returns {Promise<{ userId: string, username: string, token: string, auth: { Authorization: string } }>}
+ */
+export async function registerAndLogin(app, username, password = 'password123') {
+  const registered = await request(app).post('/register').send({ username, password }).expect(201);
+  const loggedIn = await request(app).post('/login').send({ username, password }).expect(200);
+
+  return {
+    userId: registered.body.id,
+    username: registered.body.username,
+    token: loggedIn.body.token,
+    auth: { Authorization: `Bearer ${loggedIn.body.token}` },
   };
 }
