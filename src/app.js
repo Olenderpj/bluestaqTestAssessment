@@ -5,6 +5,7 @@ import { TokenService } from './auth/token.service.js';
 import { AuthService } from './auth/auth.service.js';
 import { AuthController } from './auth/auth.controller.js';
 import { createAuthRouter } from './auth/auth.routes.js';
+import { createGateway } from './gateway/gateway.js';
 
 /**
  * Composition root: builds a fully wired Express app from a database
@@ -32,7 +33,10 @@ export async function createApp({ db, config }) {
   // Public routes: no token required.
   app.use(createAuthRouter(new AuthController(authService)));
 
-  // Module wiring (gateway, notes, docs) is added here by later tasks.
+  // Everything below requires an authenticated user; the gateway sets x-user-id / x-username.
+  app.use(createGateway(tokenService));
+
+  // Module wiring (notes, docs) is added here by later tasks.
 
   app.use(notFoundHandler);
   app.use(errorHandler);
