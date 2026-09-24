@@ -68,6 +68,15 @@ test('POST /note normalizes and deduplicates sharedWith ids', async () => {
   assert.deepEqual(res.body.sharedWith, [bob.userId]);
 });
 
+test('POST /note rejects a sharedWith id that does not belong to a real user', async () => {
+  const wellFormedButUnknownId = 'ffffffffffffffffffffffff';
+
+  const res = await createNote(alice, { note: 'x', sharedWith: [wellFormedButUnknownId] });
+
+  assert.equal(res.status, 400);
+  assert.equal(typeof res.body.error, 'string');
+});
+
 test('POST /note validates input', async () => {
   const cases = [
     {},

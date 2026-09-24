@@ -28,7 +28,7 @@ export async function createApp({ db, config }) {
 
   const tokenService = new TokenService({ secret: config.jwtSecret, expiresIn: config.jwtExpiresIn });
   const authService = new AuthService({ userRepository, tokenService, bcryptRounds: config.bcryptRounds });
-  const noteService = new NoteService({ noteRepository });
+  const noteService = new NoteService({ noteRepository, userRepository });
 
   const app = express();
   app.disable('x-powered-by');

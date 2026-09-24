@@ -1,18 +1,40 @@
 import { Note } from './note.model.js';
-import { ForbiddenError, NotFoundError } from '../common/errors.js';
+import { BadRequestError, ForbiddenError, NotFoundError } from '../common/errors.js';
 
 /**
- * Business logic for notes: creation and visibility. Knows nothing
- * about HTTP — takes plain data in, returns plain data out.
+ * Business logic for notes: creation, visibility, and updates. Knows
+ * nothing about HTTP — takes plain data in, returns plain data out.
  */
 export class NoteService {
   #notes;
+  #users;
 
   /** @param {object} deps
    * @param {import('./note.repository.js').NoteRepository} deps.noteRepository
+   * @param {import('../users/user.repository.js').UserRepository} deps.userRepository - used to reject sharedWith ids that don't belong to a real user
    */
-  constructor({ noteRepository }) {
+  constructor({ noteRepository, userRepository }) {
     this.#notes = noteRepository;
+    this.#users = userRepository;
+  }
+
+  /**
+   * Rejects a sharedWith list up front if it names a user id that
+   * doesn't exist, instead of silently storing it — a typo'd or stale
+   * id would otherwise make the note invisible to whoever it was
+   * meant for, with no error to explain why.
+   * @param {string[]} sharedWith
+   * @throws {BadRequestError} if any id has no matching user
+   */
+  async #assertSharedWithExists(sharedWith) {
+    if (sharedWith.length === 0) {
+      return;
+    }
+
+    const missingIds = await this.#users.findMissingIds(sharedWith);
+    if (missingIds.length > 0) {
+      throw new BadRequestError(`sharedWith contains unknown user id(s): ${missingIds.join(', ')}`);
+    }
   }
 
   /**
@@ -21,8 +43,11 @@ export class NoteService {
    * @param {{ userId: string, username: string }} user - the creator, from the gateway headers
    * @param {Date} [now] - creation timestamp; defaults to the current time
    * @returns {Promise<Note>}
+   * @throws {BadRequestError} if sharedWith names an id with no matching user
    */
   async create({ note, sharedWith }, user, now = new Date()) {
+    await this.#assertSharedWithExists(sharedWith);
+
     const draft = Note.create({ note, sharedWith, username: user.username, now });
     return this.#notes.insert(draft);
   }
@@ -50,6 +75,7 @@ export class NoteService {
    * @returns {Promise<Note>}
    * @throws {NotFoundError} if the note doesn't exist or isn't visible to the caller
    * @throws {ForbiddenError} if the caller isn't the creator but tries to change sharedWith
+   * @throws {BadRequestError} if a new sharedWith names an id with no matching user
    */
   async update(id, changes, user, now = new Date()) {
     const existing = await this.#notes.findById(id);
@@ -59,6 +85,10 @@ export class NoteService {
 
     if ('sharedWith' in changes && !existing.isOwnedBy(user.username)) {
       throw new ForbiddenError('Only the note creator can change sharedWith');
+    }
+
+    if ('sharedWith' in changes) {
+      await this.#assertSharedWithExists(changes.sharedWith);
     }
 
     const updated = await this.#notes.update(id, {

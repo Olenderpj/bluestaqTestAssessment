@@ -70,3 +70,25 @@ test('toJSON never exposes passwordHash', async () => {
   const json = JSON.parse(JSON.stringify(created));
   assert.deepEqual(Object.keys(json).sort(), ['createdAt', 'id', 'username']);
 });
+
+test('findMissingIds returns only the ids that do not belong to a real user', async () => {
+  const alice = await repo.create(makeUser('alice'));
+  const bob = await repo.create(makeUser('bob'));
+  const unknownId = 'ffffffffffffffffffffffff';
+
+  const missing = await repo.findMissingIds([alice.id, bob.id, unknownId]);
+
+  assert.deepEqual(missing, [unknownId]);
+});
+
+test('findMissingIds returns an empty array when every id exists', async () => {
+  const alice = await repo.create(makeUser('alice'));
+
+  assert.deepEqual(await repo.findMissingIds([alice.id]), []);
+});
+
+test('findMissingIds treats a malformed id string as missing rather than throwing', async () => {
+  const missing = await repo.findMissingIds(['not-an-id']);
+
+  assert.deepEqual(missing, ['not-an-id']);
+});

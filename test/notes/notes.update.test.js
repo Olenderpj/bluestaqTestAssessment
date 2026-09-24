@@ -79,6 +79,16 @@ test('only the creator can change sharedWith', async () => {
   assert.deepEqual(res.body, { error: 'Only the note creator can change sharedWith' });
 });
 
+test('creator gets a 400 when sharing with an id that does not belong to a real user', async () => {
+  const original = await createNote(alice, { note: 'x' });
+  const wellFormedButUnknownId = 'ffffffffffffffffffffffff';
+
+  const res = await updateNote(alice, { id: original.id, sharedWith: [wellFormedButUnknownId] });
+
+  assert.equal(res.status, 400);
+  assert.equal(typeof res.body.error, 'string');
+});
+
 test('creator can make a note private and public again', async () => {
   const original = await createNote(alice, { note: 'secret' });
 

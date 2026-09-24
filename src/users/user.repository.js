@@ -1,5 +1,7 @@
+import { ObjectId } from 'mongodb';
 import { User } from './user.model.js';
 import { ConflictError } from '../common/errors.js';
+import { isObjectIdString } from '../common/objectId.js';
 
 // MongoDB's duplicate-key error code, used to detect a unique-index violation.
 const DUPLICATE_KEY_ERROR = 11000;
@@ -57,5 +59,28 @@ export class UserRepository {
     }
 
     return User.fromDocument(doc);
+  }
+
+  /**
+   * Checks which of a list of user ids do not belong to a real account.
+   * Used to reject a note's `sharedWith` list up front, instead of
+   * silently accepting a typo'd or stale id that would make the note
+   * invisible to the person it was meant for.
+   * @param {string[]} ids
+   * @returns {Promise<string[]>} the subset of `ids` with no matching user; a malformed id is always reported as missing
+   */
+  async findMissingIds(ids) {
+    const wellFormedIds = ids.filter(isObjectIdString);
+
+    const existingDocs = await this.#collection
+      .find({ _id: { $in: wellFormedIds.map((id) => new ObjectId(id)) } })
+      .project({ _id: 1 })
+      .toArray();
+
+    // toHexString() is always lowercase; normalize both sides so a
+    // caller passing mixed-case ids still gets an accurate result.
+    const existingIds = new Set(existingDocs.map((doc) => doc._id.toHexString()));
+
+    return ids.filter((id) => !existingIds.has(id.toLowerCase()));
   }
 }
